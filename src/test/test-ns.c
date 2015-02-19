@@ -38,10 +38,12 @@ int main(int argc, char *argv[]) {
                 NULL
         };
 
-        const char * const inaccessible[] = {
+        const char *inaccessible[] = {
                 "/home/lennart/projects",
                 NULL
         };
+        char *chroot = getenv("TEST_NS_CHROOT");
+        char *projects = getenv("TEST_NS_PROJECTS");
 
         int r;
         char tmp_dir[] = "/tmp/systemd-private-XXXXXX",
@@ -50,7 +52,11 @@ int main(int argc, char *argv[]) {
         assert_se(mkdtemp(tmp_dir));
         assert_se(mkdtemp(var_tmp_dir));
 
-        r = setup_namespace((char **) writable,
+        if (projects)
+                inaccessible[0] = projects;
+
+        r = setup_namespace(chroot,
+                            (char **) writable,
                             (char **) readonly,
                             (char **) inaccessible,
                             tmp_dir,

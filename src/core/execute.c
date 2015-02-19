@@ -1581,6 +1581,7 @@ static int exec_child(
                 }
 
                 r = setup_namespace(
+                                params->apply_chroot ? context->root_directory : NULL,
                                 context->read_write_dirs,
                                 context->read_only_dirs,
                                 context->inaccessible_dirs,
