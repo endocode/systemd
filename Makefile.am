@@ -5397,6 +5397,8 @@ systemd_pull_SOURCES = \
 	src/import/pull-tar.h \
 	src/import/pull-dkr.c \
 	src/import/pull-dkr.h \
+	src/import/pull-aci.c \
+	src/import/pull-aci.h \
 	src/import/pull-job.c \
 	src/import/pull-job.h \
 	src/import/pull-common.c \

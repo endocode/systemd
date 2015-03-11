@@ -30,6 +30,7 @@
 #include "pull-tar.h"
 #include "pull-raw.h"
 #include "pull-dkr.h"
+#include "pull-aci.h"
 
 static bool arg_force = false;
 static const char *arg_image_root = "/var/lib/machines";
@@ -316,6 +317,100 @@ static int pull_dkr(int argc, char *argv[], void *userdata) {
         return -r;
 }
 
+static void on_aci_finished(AciPull *pull, int error, void *userdata) {
+        sd_event *event = userdata;
+        assert(pull);
+
+        if (error == 0)
+                log_info("Operation completed successfully.");
+
+        sd_event_exit(event, abs(error));
+}
+
+static int pull_aci(int argc, char *argv[], void *userdata) {
+        _cleanup_(aci_pull_unrefp) AciPull *pull = NULL;
+        _cleanup_event_unref_ sd_event *event = NULL;
+        const char *name, *tag, *local;
+        int r;
+
+        tag = strchr(argv[1], ':');
+        if (tag) {
+                name = strndupa(argv[1], tag - argv[1]);
+                tag++;
+        } else {
+                name = argv[1];
+                tag = "latest";
+        }
+
+        if (!aci_name_is_valid(name)) {
+                log_error("Remote name '%s' is not valid.", name);
+                return -EINVAL;
+        }
+
+        /*
+        if (!aci_tag_is_valid(tag)) {
+                log_error("Tag name '%s' is not valid.", tag);
+                return -EINVAL;
+        }
+        */
+
+        if (argc >= 3)
+                local = argv[2];
+        else {
+                local = strchr(name, '/');
+                if (local)
+                        local++;
+                else
+                        local = name;
+        }
+
+        if (isempty(local) || streq(local, "-"))
+                local = NULL;
+
+        if (local) {
+                if (!machine_name_is_valid(local)) {
+                        log_error("Local image name '%s' is not valid.", local);
+                        return -EINVAL;
+                }
+
+                if (!arg_force) {
+                        r = image_find(local, NULL);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to check whether image '%s' exists: %m", local);
+                        else if (r > 0) {
+                                log_error_errno(EEXIST, "Image '%s' already exists.", local);
+                                return -EEXIST;
+                        }
+                }
+
+                log_info("Pulling '%s', saving as '%s'.", name, local);
+        } else
+                log_info("Pulling '%s'.", name);
+
+        r = sd_event_default(&event);
+        if (r < 0)
+                return log_error_errno(r, "Failed to allocate event loop: %m");
+
+        assert_se(sigprocmask_many(SIG_BLOCK, SIGTERM, SIGINT, -1) == 0);
+        sd_event_add_signal(event, NULL, SIGTERM, interrupt_signal_handler,  NULL);
+        sd_event_add_signal(event, NULL, SIGINT, interrupt_signal_handler, NULL);
+
+        r = aci_pull_new(&pull, event, arg_image_root, on_aci_finished, event);
+        if (r < 0)
+                return log_error_errno(r, "Failed to allocate puller: %m");
+
+        r = aci_pull_start(pull, name, tag, local, arg_force);
+        if (r < 0)
+                return log_error_errno(r, "Failed to pull image: %m");
+
+        r = sd_event_loop(event);
+        if (r < 0)
+                return log_error_errno(r, "Failed to run event loop: %m");
+
+        log_info("Exiting.");
+        return -r;
+}
+
 static int help(int argc, char *argv[], void *userdata) {
 
         printf("%s [OPTIONS...] {COMMAND} ...\n\n"
@@ -330,7 +425,8 @@ static int help(int argc, char *argv[], void *userdata) {
                "Commands:\n"
                "  tar URL [NAME]              Download a TAR image\n"
                "  raw URL [NAME]              Download a RAW image\n"
-               "  dkr REMOTE [NAME]           Download a DKR image\n",
+               "  dkr REMOTE [NAME]           Download a DKR image\n"
+               "  aci REMOTE [NAME]           Download an ACI image\n",
                program_invocation_short_name);
 
         return 0;
@@ -416,6 +512,7 @@ static int pull_main(int argc, char *argv[]) {
                 { "tar",  2,        3,        0, pull_tar },
                 { "raw",  2,        3,        0, pull_raw },
                 { "dkr",  2,        3,        0, pull_dkr },
+                { "aci",  2,        3,        0, pull_aci },
                 {}
         };
 

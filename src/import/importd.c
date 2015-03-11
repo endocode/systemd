@@ -46,6 +46,7 @@ typedef enum TransferType {
         TRANSFER_PULL_TAR,
         TRANSFER_PULL_RAW,
         TRANSFER_PULL_DKR,
+        TRANSFER_PULL_ACI,
         _TRANSFER_TYPE_MAX,
         _TRANSFER_TYPE_INVALID = -1,
 } TransferType;
@@ -108,6 +109,7 @@ static const char* const transfer_type_table[_TRANSFER_TYPE_MAX] = {
         [TRANSFER_PULL_TAR] = "pull-tar",
         [TRANSFER_PULL_RAW] = "pull-raw",
         [TRANSFER_PULL_DKR] = "pull-dkr",
+        [TRANSFER_PULL_ACI] = "pull-aci",
 };
 
 DEFINE_PRIVATE_STRING_TABLE_LOOKUP_TO_STRING(transfer_type, TransferType);
@@ -462,8 +464,10 @@ static int transfer_start(Transfer *t) {
                         cmd[k++] = "tar";
                 else if (IN_SET(t->type, TRANSFER_IMPORT_RAW, TRANSFER_EXPORT_RAW, TRANSFER_PULL_RAW))
                         cmd[k++] = "raw";
-                else
+                else if (IN_SET(t->type, TRANSFER_PULL_DKR))
                         cmd[k++] = "dkr";
+                else if (IN_SET(t->type, TRANSFER_PULL_ACI))
+                        cmd[k++] = "aci";
 
                 if (t->verify != _IMPORT_VERIFY_INVALID) {
                         cmd[k++] = "--verify";
@@ -1023,6 +1027,91 @@ static int method_pull_dkr(sd_bus *bus, sd_bus_message *msg, void *userdata, sd_
         return sd_bus_reply_method_return(msg, "uo", id, object);
 }
 
+static int method_pull_aci(sd_bus *bus, sd_bus_message *msg, void *userdata, sd_bus_error *error) {
+        _cleanup_(transfer_unrefp) Transfer *t = NULL;
+        const char *remote, *local, *verify, *object;
+        Manager *m = userdata;
+        ImportVerify v;
+        int force, r;
+        uint32_t id;
+
+        assert(bus);
+        assert(msg);
+        assert(m);
+
+        r = bus_verify_polkit_async(
+                        msg,
+                        CAP_SYS_ADMIN,
+                        "org.freedesktop.import1.pull",
+                        false,
+                        UID_INVALID,
+                        &m->polkit_registry,
+                        error);
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return 1; /* Will call us back */
+
+        r = sd_bus_message_read(msg, "sssb", &remote, &local, &verify, &force);
+        if (r < 0)
+                return r;
+
+        /*
+        if (!aci_name_is_valid(remote))
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Remote name %s is not valid", remote);
+        */
+
+        if (isempty(local))
+                local = NULL;
+        else if (!machine_name_is_valid(local))
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Local name %s is invalid", local);
+
+        if (isempty(verify))
+                v = IMPORT_VERIFY_SIGNATURE;
+        else
+                v = import_verify_from_string(verify);
+        if (v < 0)
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Unknown verification mode %s", verify);
+
+        if (v != IMPORT_VERIFY_NO)
+                return sd_bus_error_setf(error, SD_BUS_ERROR_NOT_SUPPORTED, "DKR does not support verification.");
+
+        r = setup_machine_directory((uint64_t) -1, error);
+        if (r < 0)
+                return r;
+
+        if (manager_find(m, TRANSFER_PULL_ACI, NULL, remote))
+                return sd_bus_error_setf(error, BUS_ERROR_TRANSFER_IN_PROGRESS, "Transfer for %s already in progress.", remote);
+
+        r = transfer_new(m, &t);
+        if (r < 0)
+                return r;
+
+        t->type = TRANSFER_PULL_ACI;
+        t->verify = v;
+        t->force_local = force;
+
+        t->remote = strjoin(remote, NULL);
+        if (!t->remote)
+                return -ENOMEM;
+
+        if (local) {
+                t->local = strdup(local);
+                if (!t->local)
+                        return -ENOMEM;
+        }
+
+        r = transfer_start(t);
+        if (r < 0)
+                return r;
+
+        object = t->object_path;
+        id = t->id;
+        t = NULL;
+
+        return sd_bus_reply_method_return(msg, "uo", id, object);
+}
+
 static int method_list_transfers(sd_bus *bus, sd_bus_message *msg, void *userdata, sd_bus_error *error) {
         _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
         Manager *m = userdata;
@@ -1175,6 +1264,7 @@ static const sd_bus_vtable manager_vtable[] = {
         SD_BUS_METHOD("PullTar", "sssb", "uo", method_pull_tar_or_raw, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("PullRaw", "sssb", "uo", method_pull_tar_or_raw, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("PullDkr", "sssssb", "uo", method_pull_dkr, SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD("PullAci", "sssb", "uo", method_pull_aci, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("ListTransfers", NULL, "a(usssdo)", method_list_transfers, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("CancelTransfer", "u", NULL, method_cancel_transfer, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_SIGNAL("TransferNew", "uo", 0),

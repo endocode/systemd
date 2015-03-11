@@ -180,3 +180,19 @@ bool dkr_id_is_valid(const char *id) {
 
         return true;
 }
+
+bool aci_name_is_valid(const char *name) {
+        /* TODO */
+        return true;
+}
+
+bool aci_id_is_valid(const char *id) {
+
+        if (!filename_is_valid(id))
+                return false;
+
+        if (!in_charset(id, "0123456789abcdef"))
+                return false;
+
+        return true;
+}

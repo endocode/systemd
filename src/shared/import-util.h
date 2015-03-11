@@ -45,3 +45,6 @@ int raw_strip_suffixes(const char *name, char **ret);
 bool dkr_name_is_valid(const char *name);
 bool dkr_id_is_valid(const char *id);
 #define dkr_tag_is_valid(tag) filename_is_valid(tag)
+
+bool aci_name_is_valid(const char *name);
+bool aci_id_is_valid(const char *id);

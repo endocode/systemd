@@ -2071,6 +2071,64 @@ static int pull_dkr(int argc, char *argv[], void *userdata) {
         return transfer_image_common(bus, m);
 }
 
+static int pull_aci(int argc, char *argv[], void *userdata) {
+        _cleanup_bus_message_unref_ sd_bus_message *m = NULL;
+        const char *local, *remote;
+        sd_bus *bus = userdata;
+        int r;
+
+        remote = argv[1];
+
+        /*
+        if (!aci_name_is_valid(remote)) {
+                log_error("DKR name '%s' is invalid.", remote);
+                return -EINVAL;
+        }
+        */
+
+        if (argc >= 3)
+                local = argv[2];
+        else {
+                local = strchr(remote, '/');
+                if (local)
+                        local++;
+                else
+                        local = remote;
+        }
+
+        if (isempty(local) || streq(local, "-"))
+                local = NULL;
+
+        if (local) {
+                if (!machine_name_is_valid(local)) {
+                        log_error("Local name %s is not a suitable machine name.", local);
+                        return -EINVAL;
+                }
+        }
+
+        r = sd_bus_message_new_method_call(
+                        bus,
+                        &m,
+                        "org.freedesktop.import1",
+                        "/org/freedesktop/import1",
+                        "org.freedesktop.import1.Manager",
+                        "PullAci");
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        r = sd_bus_message_append(
+                        m,
+                        "sssb",
+                        remote,
+                        local,
+                        import_verify_to_string(arg_verify),
+                        arg_force);
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        return transfer_image_common(bus, m);
+}
+
 typedef struct TransferInfo {
         uint32_t id;
         const char *type;
@@ -2318,6 +2376,7 @@ static int help(int argc, char *argv[], void *userdata) {
                "  pull-tar URL [NAME]         Download a TAR container image\n"
                "  pull-raw URL [NAME]         Download a RAW container or VM image\n"
                "  pull-dkr REMOTE [NAME]      Download a DKR container image\n"
+               "  pull-aci REMOTE [NAME]      Download an ACI container image\n"
                "  import-tar FILE [NAME]      Import a local TAR container image\n"
                "  import-raw FILE [NAME]      Import a local RAW container or VM image\n"
                "  export-tar NAME [FILE]      Export a TAR container image locally\n"
@@ -2539,6 +2598,7 @@ static int machinectl_main(int argc, char *argv[], sd_bus *bus) {
                 { "pull-tar",        2,        3,        0,            pull_tar          },
                 { "pull-raw",        2,        3,        0,            pull_raw          },
                 { "pull-dkr",        2,        3,        0,            pull_dkr          },
+                { "pull-aci",        2,        3,        0,            pull_aci          },
                 { "list-transfers",  VERB_ANY, 1,        0,            list_transfers    },
                 { "cancel-transfer", 2,        VERB_ANY, 0,            cancel_transfer   },
                 { "set-limit",       2,        3,        0,            set_limit         },
