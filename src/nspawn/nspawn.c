@@ -3674,6 +3674,19 @@ static int determine_uid_shift(void) {
         return 0;
 }
 
+static int is_aci(char *image_directory) {
+        const char *p, *q;
+
+        // TODO: add more robust checks
+        p = strjoina(image_directory, "/rootfs");
+        q = strjoina(image_directory, "/manifest");
+
+        if (access(p, F_OK) == 0 && access(q, F_OK) == 0)
+                return 1;
+
+        return 0;
+}
+
 int main(int argc, char *argv[]) {
 
         _cleanup_free_ char *device_path = NULL, *root_device = NULL, *home_device = NULL, *srv_device = NULL, *console = NULL;
@@ -3799,6 +3812,12 @@ int main(int argc, char *argv[]) {
                                                 log_info("Populated %s from template %s.", arg_directory, arg_template);
                                 }
                         }
+                }
+
+                if (is_aci(arg_directory)) {
+                        r = free_and_strdup(&arg_directory, strjoina(arg_directory, "/rootfs"));
+                        if (r < 0)
+                                goto finish;
                 }
 
                 if (arg_boot) {
