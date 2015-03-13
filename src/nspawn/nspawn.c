@@ -3675,6 +3675,25 @@ static int determine_uid_shift(void) {
         return 0;
 }
 
+static int is_semver(const char *str) {
+        _cleanup_free_ char *s;
+        char *token, *saveptr;
+        int i = 0;
+
+        s = strndup(str, 10);
+
+        token = strtok_r(s, ".", &saveptr);
+        while (token) {
+                i++;
+                if (i == 3)
+                        return 1;
+
+                token = strtok_r(NULL, ".", &saveptr);
+        }
+
+        return 0;
+}
+
 static int is_valid_aci_manifest(const char *manifest_path) {
 #define MAX_BUFFER_LEN (2 * 1024 * 1024)
         int fd, nr;
@@ -3683,6 +3702,7 @@ static int is_valid_aci_manifest(const char *manifest_path) {
         char *buf;
         const char *manifest_bytes;
         void *state = NULL;
+        bool valid_kind = false, valid_version = false, has_name = false;
 
         fd = open(manifest_path, O_RDONLY);
         if (fd < 0)
@@ -3694,7 +3714,7 @@ static int is_valid_aci_manifest(const char *manifest_path) {
         size = st.st_size;
 
         if (size > MAX_BUFFER_LEN)
-                return log_error("Failed to read %s: too big", manifest_path);
+                return log_error("Failed to read %s: file too big", manifest_path);
 
         buf = malloc(size * sizeof(char) + 1);
         if (!buf)
@@ -3719,16 +3739,31 @@ static int is_valid_aci_manifest(const char *manifest_path) {
                 if (t == JSON_END || t < 0)
                         break;
 
-                if (t == JSON_STRING && streq_ptr(str, "acKind")) {
-                        t = json_tokenize(&manifest_bytes, &str, &v, &state, NULL);
-                        if (t == JSON_COLON) {
+                else if (t == JSON_STRING) {
+                        if (streq_ptr(str, "acKind")) {
                                 t = json_tokenize(&manifest_bytes, &str, &v, &state, NULL);
-                                if (t == JSON_STRING && streq_ptr(str, "ImageManifest")) {
-                                        return 1;
+                                if (t == JSON_COLON) {
+                                        t = json_tokenize(&manifest_bytes, &str, &v, &state, NULL);
+                                        if (t == JSON_STRING && streq_ptr(str, "ImageManifest")) {
+                                                valid_kind = true;
+                                        }
                                 }
+                        } else if (streq_ptr(str, "acVersion")) {
+                                t = json_tokenize(&manifest_bytes, &str, &v, &state, NULL);
+                                if (t == JSON_COLON) {
+                                        t = json_tokenize(&manifest_bytes, &str, &v, &state, NULL);
+                                        if (t == JSON_STRING && is_semver(str)) {
+                                                valid_version = true;
+                                        }
+                                }
+                        } else if (streq_ptr(str, "name")) {
+                                has_name = true;
                         }
                 }
         }
+
+        if (valid_kind && valid_version && has_name)
+                return 1;
 
         return 0;
 }
