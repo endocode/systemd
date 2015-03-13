@@ -90,6 +90,7 @@
 #include "in-addr-util.h"
 #include "fw-util.h"
 #include "local-addresses.h"
+#include "json.h"
 
 #ifdef HAVE_SECCOMP
 #include "seccomp-util.h"
@@ -3674,15 +3675,72 @@ static int determine_uid_shift(void) {
         return 0;
 }
 
+static int is_valid_aci_manifest(const char *manifest_path) {
+#define MAX_BUFFER_LEN (2 * 1024 * 1024)
+        int fd, nr;
+        struct stat st;
+        off_t size;
+        char *buf;
+        const char *manifest_bytes;
+        void *state = NULL;
+
+        fd = open(manifest_path, O_RDONLY);
+        if (fd < 0)
+                return log_error_errno(errno, "Failed to open %s: %m", manifest_path);
+
+        if (fstat(fd, &st) < 0)
+                return log_error_errno(errno, "Failed to stat %s: %m", manifest_path);
+
+        size = st.st_size;
+
+        if (size > MAX_BUFFER_LEN)
+                return log_error("Failed to read %s: too big", manifest_path);
+
+        buf = malloc(size * sizeof(char) + 1);
+        if (!buf)
+                return log_oom();
+
+        nr = read(fd, buf, size);
+        if (nr == -1)
+                return log_error_errno(errno, "Failed to read %s: %m", manifest_path);
+
+        buf[nr] = '\0';
+        manifest_bytes = buf;
+
+        close(fd);
+
+        for (;;) {
+                _cleanup_free_ char *str = NULL;
+                int t;
+                union json_value v = {};
+
+                t = json_tokenize(&manifest_bytes, &str, &v, &state, NULL);
+
+                if (t == JSON_END || t < 0)
+                        break;
+
+                if (t == JSON_STRING && streq_ptr(str, "acKind")) {
+                        t = json_tokenize(&manifest_bytes, &str, &v, &state, NULL);
+                        if (t == JSON_COLON) {
+                                t = json_tokenize(&manifest_bytes, &str, &v, &state, NULL);
+                                if (t == JSON_STRING && streq_ptr(str, "ImageManifest")) {
+                                        return 1;
+                                }
+                        }
+                }
+        }
+
+        return 0;
+}
+
 static int is_aci(char *image_directory) {
-        const char *p, *q;
+        const char *rootfs_path, *manifest_path;
 
-        // TODO: add more robust checks
-        p = strjoina(image_directory, "/rootfs");
-        q = strjoina(image_directory, "/manifest");
+        rootfs_path = strjoina(image_directory, "/rootfs");
+        manifest_path = strjoina(image_directory, "/manifest");
 
-        if (access(p, F_OK) == 0 && access(q, F_OK) == 0)
-                return 1;
+        if (access(rootfs_path, F_OK) == 0 && access(manifest_path, F_OK) == 0)
+                return is_valid_aci_manifest(manifest_path);
 
         return 0;
 }
