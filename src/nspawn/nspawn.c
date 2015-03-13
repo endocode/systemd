@@ -3694,15 +3694,56 @@ static int is_semver(const char *str) {
         return 0;
 }
 
+static int validate_manifest(const char *manifest) {
+        void *state = NULL;
+        bool valid_kind = false, valid_version = false, has_name = false;
+
+        for (;;) {
+                _cleanup_free_ char *str = NULL;
+                int t;
+                union json_value v = {};
+
+                t = json_tokenize(&manifest, &str, &v, &state, NULL);
+
+                if (t == JSON_END || t < 0)
+                        break;
+
+                else if (t == JSON_STRING) {
+                        if (streq_ptr(str, "acKind")) {
+                                t = json_tokenize(&manifest, &str, &v, &state, NULL);
+                                if (t == JSON_COLON) {
+                                        t = json_tokenize(&manifest, &str, &v, &state, NULL);
+                                        if (t == JSON_STRING && streq_ptr(str, "ImageManifest")) {
+                                                valid_kind = true;
+                                        }
+                                }
+                        } else if (streq_ptr(str, "acVersion")) {
+                                t = json_tokenize(&manifest, &str, &v, &state, NULL);
+                                if (t == JSON_COLON) {
+                                        t = json_tokenize(&manifest, &str, &v, &state, NULL);
+                                        if (t == JSON_STRING && is_semver(str)) {
+                                                valid_version = true;
+                                        }
+                                }
+                        } else if (streq_ptr(str, "name")) {
+                                has_name = true;
+                        }
+                }
+        }
+
+        if (valid_kind && valid_version && has_name)
+                return 1;
+
+        return 0;
+}
+
 static int is_valid_aci_manifest(const char *manifest_path) {
 #define MAX_BUFFER_LEN (2 * 1024 * 1024)
         int fd, nr;
         struct stat st;
         off_t size;
         char *buf;
-        const char *manifest_bytes;
-        void *state = NULL;
-        bool valid_kind = false, valid_version = false, has_name = false;
+        _cleanup_free_ const char *manifest_bytes;
 
         fd = open(manifest_path, O_RDONLY);
         if (fd < 0)
@@ -3729,43 +3770,7 @@ static int is_valid_aci_manifest(const char *manifest_path) {
 
         close(fd);
 
-        for (;;) {
-                _cleanup_free_ char *str = NULL;
-                int t;
-                union json_value v = {};
-
-                t = json_tokenize(&manifest_bytes, &str, &v, &state, NULL);
-
-                if (t == JSON_END || t < 0)
-                        break;
-
-                else if (t == JSON_STRING) {
-                        if (streq_ptr(str, "acKind")) {
-                                t = json_tokenize(&manifest_bytes, &str, &v, &state, NULL);
-                                if (t == JSON_COLON) {
-                                        t = json_tokenize(&manifest_bytes, &str, &v, &state, NULL);
-                                        if (t == JSON_STRING && streq_ptr(str, "ImageManifest")) {
-                                                valid_kind = true;
-                                        }
-                                }
-                        } else if (streq_ptr(str, "acVersion")) {
-                                t = json_tokenize(&manifest_bytes, &str, &v, &state, NULL);
-                                if (t == JSON_COLON) {
-                                        t = json_tokenize(&manifest_bytes, &str, &v, &state, NULL);
-                                        if (t == JSON_STRING && is_semver(str)) {
-                                                valid_version = true;
-                                        }
-                                }
-                        } else if (streq_ptr(str, "name")) {
-                                has_name = true;
-                        }
-                }
-        }
-
-        if (valid_kind && valid_version && has_name)
-                return 1;
-
-        return 0;
+        return validate_manifest(manifest_bytes);
 }
 
 static int is_aci(char *image_directory) {
