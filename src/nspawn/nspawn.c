@@ -2808,9 +2808,10 @@ int main(int argc, char *argv[]) {
                 goto finish;
         }
 
+        /* we're going to run nspawn on non-systemd hosts, we'll just disable registration when non-sysd */
         if (sd_booted() <= 0) {
-                log_error("Not running on a systemd system.");
-                goto finish;
+                /* TODO(vc): there are other things which won't work on non-systemd hosts, but we don't activate them yet via rkt */
+                arg_register = false;
         }
 
         log_close();
