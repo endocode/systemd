@@ -154,6 +154,7 @@ static bool arg_share_system = false;
 static bool arg_register = true;
 static bool arg_keep_unit = false;
 static int arg_keep_fd = -1;
+static const char *arg_pid_file = NULL;
 static char **arg_network_interfaces = NULL;
 static char **arg_network_macvlan = NULL;
 static bool arg_network_veth = false;
@@ -209,7 +210,8 @@ static int help(void) {
                "     --register=BOOLEAN     Register container as machine\n"
                "     --keep-unit            Do not register a scope for the machine, reuse\n"
                "                            the service unit nspawn is running in\n"
-               "     --keep-fd=FDNUM        Do not close the specified file descriptor\n",
+               "     --keep-fd=FDNUM        Do not close the specified file descriptor\n"
+               "     --pid-file=FILE        Write child pid to FILE\n",
                program_invocation_short_name);
 
         return 0;
@@ -233,6 +235,7 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_REGISTER,
                 ARG_KEEP_UNIT,
                 ARG_KEEP_FD,
+                ARG_PID_FILE,
                 ARG_NETWORK_INTERFACE,
                 ARG_NETWORK_MACVLAN,
                 ARG_NETWORK_VETH,
@@ -265,6 +268,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "register",              required_argument, NULL, ARG_REGISTER          },
                 { "keep-unit",             no_argument,       NULL, ARG_KEEP_UNIT         },
                 { "keep-fd",               required_argument, NULL, ARG_KEEP_FD           },
+                { "pid-file",              required_argument, NULL, ARG_PID_FILE          },
                 { "network-interface",     required_argument, NULL, ARG_NETWORK_INTERFACE },
                 { "network-macvlan",       required_argument, NULL, ARG_NETWORK_MACVLAN   },
                 { "network-veth",          no_argument,       NULL, ARG_NETWORK_VETH      },
@@ -559,6 +563,10 @@ static int parse_argv(int argc, char *argv[]) {
                                 log_error("Failed to parse --keep-fd= argument: %s", optarg);
                                 return r;
                         }
+                        break;
+
+                case ARG_PID_FILE:
+                        arg_pid_file = optarg;
                         break;
 
                 case ARG_PERSONALITY:
@@ -2757,6 +2765,13 @@ static int wait_for_container(pid_t pid, ContainerStatus *container) {
         return r;
 }
 
+static int write_pid(const char *f, int pid) {
+        char pid_str[13]; /* -2147483646\n\0 */
+
+        snprintf(pid_str, sizeof(pid_str), "%i\n", pid);
+        return write_string_file_atomic(f, pid_str);
+}
+
 static void nop_handler(int sig) {}
 
 int main(int argc, char *argv[]) {
@@ -3317,6 +3332,12 @@ int main(int argc, char *argv[]) {
                 eventfds[1] = safe_close(eventfds[1]);
 
                 if (r >= 0) {
+                        if (arg_pid_file) {
+                                r = write_pid(arg_pid_file, pid);
+                                if (r < 0)
+                                        goto finish;
+                        }
+
                         r = register_machine(pid);
                         if (r < 0)
                                 goto finish;
