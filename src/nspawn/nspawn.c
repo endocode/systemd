@@ -178,6 +178,7 @@ static bool arg_quiet = false;
 static bool arg_share_system = false;
 static bool arg_register = true;
 static bool arg_keep_unit = false;
+static int arg_keep_fd = -1;
 static char **arg_network_interfaces = NULL;
 static char **arg_network_macvlan = NULL;
 static char **arg_network_ipvlan = NULL;
@@ -246,6 +247,7 @@ static void help(void) {
                "     --keep-unit            Do not register a scope for the machine, reuse\n"
                "                            the service unit nspawn is running in\n"
                "     --volatile[=MODE]      Run the system in volatile mode\n"
+               "     --keep-fd=FDNUM        Do not close the specified file descriptor\n"
                , program_invocation_short_name);
 }
 
@@ -287,6 +289,7 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_SHARE_SYSTEM,
                 ARG_REGISTER,
                 ARG_KEEP_UNIT,
+                ARG_KEEP_FD,
                 ARG_NETWORK_INTERFACE,
                 ARG_NETWORK_MACVLAN,
                 ARG_NETWORK_IPVLAN,
@@ -322,6 +325,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "share-system",          no_argument,       NULL, ARG_SHARE_SYSTEM      },
                 { "register",              required_argument, NULL, ARG_REGISTER          },
                 { "keep-unit",             no_argument,       NULL, ARG_KEEP_UNIT         },
+                { "keep-fd",               required_argument, NULL, ARG_KEEP_FD           },
                 { "network-interface",     required_argument, NULL, ARG_NETWORK_INTERFACE },
                 { "network-macvlan",       required_argument, NULL, ARG_NETWORK_MACVLAN   },
                 { "network-ipvlan",        required_argument, NULL, ARG_NETWORK_IPVLAN    },
@@ -641,6 +645,14 @@ static int parse_argv(int argc, char *argv[]) {
 
                 case ARG_KEEP_UNIT:
                         arg_keep_unit = true;
+                        break;
+
+                case ARG_KEEP_FD:
+                        r = safe_atoi(optarg, &arg_keep_fd);
+                        if (r < 0) {
+                                log_error("Failed to parse --keep-fd= argument: %s", optarg);
+                                return r;
+                        }
                         break;
 
                 case ARG_PERSONALITY:
@@ -3614,8 +3626,40 @@ int main(int argc, char *argv[]) {
                         goto finish;
                 }
         }
+
+        /* if we're keeping an fd open add it to the listen fds set temporarily across fdset_close_others() */
+        if (arg_keep_fd >= 0) {
+                if (!fds) {
+                        fds = fdset_new();
+                        if (!fds) {
+                                r = log_oom();
+                                goto finish;
+                        }
+                }
+                r = fdset_put(fds, arg_keep_fd);
+                if (r < 0) {
+                        log_error_errno(r, "Failed to add kept fd: %m");
+                        goto finish;
+                }
+        }
+
         fdset_close_others(fds);
         log_open();
+
+        if (arg_keep_fd >= 0) {
+                r = fdset_remove(fds, arg_keep_fd);
+                if (r < 0) {
+                        log_error_errno(r, "Failed to remove kept fd: %m");
+                        goto finish;
+                }
+
+                /* ensure the kept fd is closed in the child, only the parent keeps it around. */
+                r = fd_cloexec(arg_keep_fd, true);
+                if (r < 0) {
+                        log_error_errno(r, "Failed to set cloexec on kept fd: %m");
+                        goto finish;
+                }
+        }
 
         if (arg_directory) {
                 assert(!arg_image);
