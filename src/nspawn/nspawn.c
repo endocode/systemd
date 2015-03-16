@@ -90,6 +90,7 @@
 #include "in-addr-util.h"
 #include "fw-util.h"
 #include "local-addresses.h"
+#include "json.h"
 
 #ifdef HAVE_SECCOMP
 #include "seccomp-util.h"
@@ -3674,6 +3675,116 @@ static int determine_uid_shift(void) {
         return 0;
 }
 
+static int is_semver(const char *str) {
+        _cleanup_free_ char *s;
+        char *token, *saveptr;
+        int i = 0;
+
+        s = strndup(str, 10);
+
+        token = strtok_r(s, ".", &saveptr);
+        while (token) {
+                i++;
+                if (i == 3)
+                        return 1;
+
+                token = strtok_r(NULL, ".", &saveptr);
+        }
+
+        return 0;
+}
+
+static int validate_manifest(const char *manifest) {
+        void *state = NULL;
+        bool valid_kind = false, valid_version = false, has_name = false;
+
+        for (;;) {
+                _cleanup_free_ char *str = NULL;
+                int t;
+                union json_value v = {};
+
+                t = json_tokenize(&manifest, &str, &v, &state, NULL);
+
+                if (t == JSON_END || t < 0)
+                        break;
+
+                else if (t == JSON_STRING) {
+                        if (streq_ptr(str, "acKind")) {
+                                t = json_tokenize(&manifest, &str, &v, &state, NULL);
+                                if (t == JSON_COLON) {
+                                        t = json_tokenize(&manifest, &str, &v, &state, NULL);
+                                        if (t == JSON_STRING && streq_ptr(str, "ImageManifest")) {
+                                                valid_kind = true;
+                                        }
+                                }
+                        } else if (streq_ptr(str, "acVersion")) {
+                                t = json_tokenize(&manifest, &str, &v, &state, NULL);
+                                if (t == JSON_COLON) {
+                                        t = json_tokenize(&manifest, &str, &v, &state, NULL);
+                                        if (t == JSON_STRING && is_semver(str)) {
+                                                valid_version = true;
+                                        }
+                                }
+                        } else if (streq_ptr(str, "name")) {
+                                has_name = true;
+                        }
+                }
+        }
+
+        if (valid_kind && valid_version && has_name)
+                return 1;
+
+        return 0;
+}
+
+static int is_valid_aci_manifest(const char *manifest_path) {
+#define MAX_BUFFER_LEN (2 * 1024 * 1024)
+        int fd, nr;
+        struct stat st;
+        off_t size;
+        char *buf;
+        _cleanup_free_ const char *manifest_bytes;
+
+        fd = open(manifest_path, O_RDONLY);
+        if (fd < 0)
+                return log_error_errno(errno, "Failed to open %s: %m", manifest_path);
+
+        if (fstat(fd, &st) < 0)
+                return log_error_errno(errno, "Failed to stat %s: %m", manifest_path);
+
+        size = st.st_size;
+
+        if (size > MAX_BUFFER_LEN)
+                return log_error("Failed to read %s: file too big", manifest_path);
+
+        buf = malloc(size * sizeof(char) + 1);
+        if (!buf)
+                return log_oom();
+
+        nr = read(fd, buf, size);
+        if (nr == -1)
+                return log_error_errno(errno, "Failed to read %s: %m", manifest_path);
+
+        buf[nr] = '\0';
+        manifest_bytes = buf;
+
+        close(fd);
+
+        return validate_manifest(manifest_bytes);
+}
+
+static int is_aci(char *image_directory) {
+        const char *rootfs_path, *manifest_path;
+
+        rootfs_path = strjoina(image_directory, "/rootfs");
+        manifest_path = strjoina(image_directory, "/manifest");
+
+        if (access(rootfs_path, F_OK) == 0 && access(manifest_path, F_OK) == 0)
+                return is_valid_aci_manifest(manifest_path);
+
+        return 0;
+}
+
 int main(int argc, char *argv[]) {
 
         _cleanup_free_ char *device_path = NULL, *root_device = NULL, *home_device = NULL, *srv_device = NULL, *console = NULL;
@@ -3799,6 +3910,12 @@ int main(int argc, char *argv[]) {
                                                 log_info("Populated %s from template %s.", arg_directory, arg_template);
                                 }
                         }
+                }
+
+                if (is_aci(arg_directory)) {
+                        r = free_and_strdup(&arg_directory, strjoina(arg_directory, "/rootfs"));
+                        if (r < 0)
+                                goto finish;
                 }
 
                 if (arg_boot) {
