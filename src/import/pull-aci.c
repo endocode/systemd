@@ -231,21 +231,21 @@ static int aci_pull_job_on_open_disk(PullJob *j) {
                 if (!i->final_path)
                         return log_oom();
         }
-
         assert(i->final_path);
-        assert(!i->temp_path);
+
+        if (!i->temp_path) {
+                r = tempfn_random(i->final_path, &i->temp_path);
+                if (r < 0)
+                        return log_oom();
+
+                mkdir_parents_label(i->temp_path, 0700);
+
+                r = btrfs_subvol_make(i->temp_path);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to make btrfs subvolume %s: %m", i->temp_path);
+        }
+
         assert(i->tar_pid <= 0);
-
-        r = tempfn_random(i->final_path, &i->temp_path);
-        if (r < 0)
-                return log_oom();
-
-        mkdir_parents_label(i->temp_path, 0700);
-
-        r = btrfs_subvol_make(i->temp_path);
-        if (r < 0)
-                return log_error_errno(r, "Failed to make btrfs subvolume %s: %m", i->temp_path);
-
         j->disk_fd = import_fork_tar_x(i->temp_path, &i->tar_pid);
         if (j->disk_fd < 0)
                 return j->disk_fd;
@@ -270,18 +270,37 @@ static void aci_pull_job_on_progress(PullJob *j) {
 static int aci_pull_start_meta_discovery(AciPull *i) {
         int r;
 
-        r = pull_job_new(&i->meta_discovery_job, "https://github.com/coreos/etcd/releases/download/v2.0.5/etcd-v2.0.5-linux-amd64.aci", i->glue, i);
+        r = pull_job_new(&i->meta_discovery_job, "https://coreos.com", i->glue, i);
         if (r < 0)
                 return log_error_errno(r, "Failed to allocate meta discovery job: %m");
 
         i->meta_discovery_job->on_finished = aci_pull_job_on_finished;
-        i->meta_discovery_job->on_open_disk = aci_pull_job_on_open_disk;
         i->meta_discovery_job->on_progress = aci_pull_job_on_progress;
         i->meta_discovery_job->grow_machine_directory = i->grow_machine_directory;
 
         r = pull_job_begin(i->meta_discovery_job);
         if (r < 0)
-                return log_error_errno(r, "Failed to start layer job: %m");
+                return log_error_errno(r, "Failed to start metadata discovery: %m");
+
+        return 0;
+
+}
+
+static int aci_pull_start_download(AciPull *i, const char *url) {
+        int r;
+
+        r = pull_job_new(&i->download_job, url, i->glue, i);
+        if (r < 0)
+                return log_error_errno(r, "Failed to allocate meta discovery job: %m");
+
+        i->download_job->on_finished = aci_pull_job_on_finished;
+        i->download_job->on_open_disk = aci_pull_job_on_open_disk;
+        i->download_job->on_progress = aci_pull_job_on_progress;
+        i->download_job->grow_machine_directory = i->grow_machine_directory;
+
+        r = pull_job_begin(i->download_job);
+        if (r < 0)
+                return log_error_errno(r, "Failed to start download: %m");
 
         return 0;
 
@@ -297,38 +316,39 @@ static void aci_pull_job_on_finished(PullJob *j) {
         i = j->userdata;
 
         if (i->simple_discovery_job == j) {
-                if (j->error != 0) {
+                if (j->error < 0) {
+                        if (i->tar_pid > 1) {
+                                (void) kill_and_sigcont(i->tar_pid, SIGKILL);
+                                (void) wait_for_terminate(i->tar_pid, NULL);
+                                i->tar_pid = 0;
+                        }
+
                         r = aci_pull_start_meta_discovery(i);
                         if (r < 0)
                                 goto finish;
                         return;
                 } else
                         goto copy;
+
         } else if (i->meta_discovery_job == j) {
-                if (j->error >= 0)
-                        goto copy;
+                if (j->error < 0) {
+                        log_error_errno(j->error, "Failed to perform meta discovery");
+                        r = j->error;
+                        goto finish;
+                }
+                r = aci_pull_start_download(i, "https://github.com/coreos/etcd/releases/download/v2.0.5/etcd-v2.0.5-linux-amd64.aci");
+                if (r < 0)
+                        goto finish;
+                return;
 
-                log_error_errno(j->error, "Not implemented yet %d", j->error);
-                r = j->error;
-                goto finish;
-        } else
-                assert_not_reached("Got finished event for unknown curl object");
+        } else if (i->download_job == j) {
+                if (j->error < 0) {
+                        log_error_errno(j->error, "Failed to download");
+                        r = j->error;
+                        goto finish;
+                 }
+                goto copy;
 
-        if (j->error != 0) {
-                if (j == i->simple_discovery_job)
-                        log_error_errno(j->error, "Failed to retrieve images with simple discovery");
-                else if (j == i->meta_discovery_job)
-                        log_error_errno(j->error, "Failed to retrieve tags list.");
-                else if (j == i->download_job)
-                        log_error_errno(j->error, "Failed to retrieve ancestry list.");
-                else
-                        log_error_errno(j->error, "Failed to retrieve unknown data.");
-
-                r = j->error;
-                goto finish;
-        }
-
-        if (i->simple_discovery_job == j) {
         } else
                 assert_not_reached("Got finished event for unknown curl object");
 
@@ -405,6 +425,7 @@ int aci_pull_start(AciPull *i, const char *name, const char *tag, const char *lo
                 return r;
 
         i->simple_discovery_job->on_finished = aci_pull_job_on_finished;
+        i->simple_discovery_job->on_open_disk = aci_pull_job_on_open_disk;
         i->simple_discovery_job->on_progress = aci_pull_job_on_progress;
 
         return pull_job_begin(i->simple_discovery_job);
