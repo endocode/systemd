@@ -955,10 +955,30 @@ static int copy_devnodes(const char *dest) {
                         log_error("%s is not a char or block device, cannot copy", from);
                         return -EIO;
 
-                } else if (mknod(to, st.st_mode, st.st_rdev) < 0) {
+                } else {
+                        r = mkdir_parents(to, 0775);
+                        if (r < 0) {
+                                log_error("Failed to create parent directory of %s: %m", to);
+                                return -r;
+                        }
 
-                        log_error("mknod(%s) failed: %m", dest);
-                        return  -errno;
+                        if (mknod(to, st.st_mode, st.st_rdev) < 0) {
+                                if (errno != EPERM) {
+                                        log_error("mknod(%s) failed: %m", to);
+                                        return -errno;
+                                }
+
+                                /* Some systems abusively restrict mknod but
+                                 * allow bind mounts. */
+                                if (touch(to) < 0) {
+                                        log_error("touch (%s) failed: %m", to);
+                                        return -errno;
+                                }
+                                if (mount(from, to, "bind", MS_BIND, NULL) < 0) {
+                                        log_error("both mknod and bind mount (%s) failed: %m", to);
+                                        return -errno;
+                                }
+                        }
                 }
         }
 
@@ -983,18 +1003,12 @@ static int setup_ptmx(const char *dest) {
 static int setup_dev_console(const char *dest, const char *console) {
         _cleanup_umask_ mode_t u;
         const char *to;
-        struct stat st;
         int r;
 
         assert(dest);
         assert(console);
 
         u = umask(0000);
-
-        if (stat("/dev/null", &st) < 0) {
-                log_error("Failed to stat /dev/null: %m");
-                return -errno;
-        }
 
         r = chmod_and_chown(console, 0600, 0, 0);
         if (r < 0) {
@@ -1004,15 +1018,11 @@ static int setup_dev_console(const char *dest, const char *console) {
 
         /* We need to bind mount the right tty to /dev/console since
          * ptys can only exist on pts file systems. To have something
-         * to bind mount things on we create a device node first, and
-         * use /dev/null for that since we the cgroups device policy
-         * allows us to create that freely, while we cannot create
-         * /dev/console. (Note that the major minor doesn't actually
-         * matter here, since we mount it over anyway). */
+         * to bind mount things on we create an empty regular file. */
 
         to = strappenda(dest, "/dev/console");
-        if (mknod(to, (st.st_mode & ~07777) | 0600, st.st_rdev) < 0) {
-                log_error("mknod() for /dev/console failed: %m");
+        if (touch(to) < 0) {
+                log_error("touch() for /dev/console failed: %m");
                 return -errno;
         }
 
