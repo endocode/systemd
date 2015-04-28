@@ -1039,25 +1039,19 @@ static int mount_cgroup_hierarchy(const char *dest, const char *controller, cons
 
         mkdir_p(to, 0755);
 
-        /* The superblock mount options of the mount point need to be
-         * identical to the hosts', and hence writable... */
+        /* Mount cgroup writable to allow a writable sub-hierarchy */
         if (mount("cgroup", to, "cgroup", MS_NOSUID|MS_NOEXEC|MS_NODEV, controller) < 0)
                 return log_error_errno(errno, "Failed to mount to %s: %m", to);
 
-        /* ... hence let's only make the bind mount read-only, not the
-         * superblock. */
-        if (read_only) {
-                if (mount(NULL, to, NULL, MS_BIND|MS_REMOUNT|MS_NOSUID|MS_NOEXEC|MS_NODEV|MS_RDONLY, NULL) < 0)
-                        return log_error_errno(errno, "Failed to remount %s read-only: %m", to);
-        }
         return 1;
 }
 
 static int mount_cgroup(const char *dest) {
         _cleanup_set_free_free_ Set *controllers = NULL;
         _cleanup_free_ char *own_cgroup_path = NULL;
-        const char *cgroup_root, *systemd_root, *systemd_own;
+        const char *cgroup_root, *systemd_root, *systemd_own, *cgroup_own;
         int r;
+        char *to;
 
         controllers = set_new(&string_hash_ops);
         if (!controllers)
@@ -1094,6 +1088,11 @@ static int mount_cgroup(const char *dest) {
                         if (r < 0)
                                 return r;
 
+                        /* Make our own cgroup a (writable) bind mount */
+                        cgroup_own = strjoina(dest, "/sys/fs/cgroup/", controller, own_cgroup_path);
+                        if (access(cgroup_own, F_OK) == 0)
+                            if (mount(cgroup_own, cgroup_own,  NULL, MS_BIND, NULL) < 0)
+                                    return log_error_errno(errno, "Failed to turn %s into a bind mount: %m", cgroup_own);
                 } else if (r < 0)
                         return log_error_errno(r, "Failed to read link %s: %m", origin);
                 else {
@@ -1114,9 +1113,21 @@ static int mount_cgroup(const char *dest) {
                         if (r < 0)
                                 return r;
 
+                        /* Make our own cgroup a (writable) bind mount */
+                        cgroup_own = strjoina(dest, "/sys/fs/cgroup/", combined, own_cgroup_path);
+                        if (access(cgroup_own, F_OK) == 0)
+                            if (mount(cgroup_own, cgroup_own,  NULL, MS_BIND, NULL) < 0)
+                                    return log_error_errno(errno, "Failed to turn %s into a bind mount: %m", cgroup_own);
+
+
                         if (symlink(combined, target) < 0)
                                 return log_error_errno(errno, "Failed to create symlink for combined hierarchy: %m");
                 }
+
+                to = strjoina(dest, "/sys/fs/cgroup/", controller);
+                /* Remount the root controller read-only */
+                if (mount(NULL, to, NULL, MS_BIND|MS_REMOUNT|MS_NOSUID|MS_NOEXEC|MS_NODEV|MS_RDONLY, NULL) < 0)
+                        return log_error_errno(errno, "Failed to remount %s read-only: %m", to);
         }
 
         r = mount_cgroup_hierarchy(dest, "name=systemd,xattr", "systemd", false);
