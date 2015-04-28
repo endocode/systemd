@@ -2038,6 +2038,11 @@ static int register_machine(pid_t pid, int local_ifindex) {
                 if (r < 0)
                         return log_error_errno(r, "Failed to add device whitelist: %m");
 
+                r = sd_bus_message_append(m, "(sv)", "Delegate", "b", 1,
+                                          true);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to add Delegate option: %m");
+
                 STRV_FOREACH(i, arg_property) {
                         r = sd_bus_message_open_container(m, 'r', "sv");
                         if (r < 0)
