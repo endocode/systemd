@@ -23,6 +23,7 @@
 #include <sched.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/mount.h>
 #include <stdlib.h>
 #include <string.h>
@@ -3594,6 +3595,24 @@ static int on_orderly_shutdown(sd_event_source *s, const struct signalfd_siginfo
         return 0;
 }
 
+static int on_sigchld(sd_event_source *s, const struct signalfd_siginfo *si, void *userdata) {
+        pid_t leader_pid;
+        siginfo_t status;
+
+        leader_pid = PTR_TO_UINT32(userdata);
+
+        /* the leader pid will be reaped later in wait_for_container */
+        if (si->ssi_pid == leader_pid)
+                return sd_event_exit(sd_event_source_get_event(s), PTR_TO_INT(userdata));
+
+        /* reap other children */
+
+        zero(status);
+        waitid(P_ALL, -1, &status, WEXITED | WNOHANG);
+
+        return 0;
+}
+
 static int determine_names(void) {
         int r;
 
@@ -4386,7 +4405,7 @@ int main(int argc, char *argv[]) {
                                 }
 
                                 /* simply exit on sigchld */
-                                sd_event_add_signal(event, NULL, SIGCHLD, NULL, NULL);
+                                sd_event_add_signal(event, NULL, SIGCHLD,  on_sigchld , UINT32_TO_PTR(pid));
 
                                 if (arg_expose_ports) {
                                         r = watch_rtnl(event, rtnl_socket_pair[0], &exposed, &rtnl);
