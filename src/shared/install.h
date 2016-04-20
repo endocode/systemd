@@ -117,7 +117,7 @@ UnitFileState unit_file_get_state(
                 const char *root_dir,
                 const char *filename);
 
-int unit_file_get_list(UnitFileScope scope, const char *root_dir, Hashmap *h);
+int unit_file_get_list(UnitFileScope scope, const char *root_dir, Hashmap *h, char **states, char **patterns);
 
 void unit_file_list_free(Hashmap *h);
 int unit_file_changes_add(UnitFileChange **changes, unsigned *n_changes, UnitFileChangeType type, const char *path, const char *source);

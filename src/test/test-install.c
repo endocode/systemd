@@ -48,7 +48,7 @@ int main(int argc, char* argv[]) {
         unsigned n_changes = 0;
 
         h = hashmap_new(&string_hash_ops);
-        r = unit_file_get_list(UNIT_FILE_SYSTEM, NULL, h);
+        r = unit_file_get_list(UNIT_FILE_SYSTEM, NULL, h, NULL, NULL);
         assert_se(r == 0);
 
         HASHMAP_FOREACH(p, h, i) {

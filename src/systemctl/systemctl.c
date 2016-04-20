@@ -310,10 +310,7 @@ static int compare_unit_info(const void *a, const void *b) {
         return strcasecmp(u->id, v->id);
 }
 
-static bool output_show_unit(const UnitInfo *u, char **patterns) {
-        if (!strv_fnmatch_or_empty(patterns, u->id, FNM_NOESCAPE))
-                return false;
-
+static bool output_show_unit(const UnitInfo *u) {
         if (arg_types) {
                 const char *dot;
 
@@ -534,6 +531,10 @@ static int get_unit_list(
         if (r < 0)
                 return bus_log_create_error(r);
 
+        r = sd_bus_message_append_strv(m, patterns);
+        if (r < 0)
+                return bus_log_create_error(r);
+
         r = sd_bus_call(bus, m, 0, &error, &reply);
         if (r < 0) {
                 log_error("Failed to list units: %s", bus_error_message(&error, r));
@@ -547,7 +548,7 @@ static int get_unit_list(
         while ((r = bus_parse_unit_info(reply, &u)) > 0) {
                 u.machine = machine;
 
-                if (!output_show_unit(&u, patterns))
+                if (!output_show_unit(&u))
                         continue;
 
                 if (!GREEDY_REALLOC(*unit_infos, size, c+1))
@@ -1247,10 +1248,7 @@ static int compare_unit_file_list(const void *a, const void *b) {
         return strcasecmp(basename(u->path), basename(v->path));
 }
 
-static bool output_show_unit_file(const UnitFileList *u, char **patterns) {
-        if (!strv_fnmatch_or_empty(patterns, basename(u->path), FNM_NOESCAPE))
-                return false;
-
+static bool output_show_unit_file(const UnitFileList *u) {
         if (!strv_isempty(arg_types)) {
                 const char *dot;
 
@@ -1261,10 +1259,6 @@ static bool output_show_unit_file(const UnitFileList *u, char **patterns) {
                 if (!strv_find(arg_types, dot+1))
                         return false;
         }
-
-        if (!strv_isempty(arg_states) &&
-            !strv_find(arg_states, unit_file_state_to_string(u->state)))
-                return false;
 
         return true;
 }
@@ -1348,7 +1342,7 @@ static int list_unit_files(sd_bus *bus, char **args) {
                 if (!h)
                         return log_oom();
 
-                r = unit_file_get_list(arg_scope, arg_root, h);
+                r = unit_file_get_list(arg_scope, arg_root, h, arg_states, strv_skip_first(args));
                 if (r < 0) {
                         unit_file_list_free(h);
                         log_error_errno(r, "Failed to get unit file list: %m");
@@ -1364,7 +1358,7 @@ static int list_unit_files(sd_bus *bus, char **args) {
                 }
 
                 HASHMAP_FOREACH(u, h, i) {
-                        if (!output_show_unit_file(u, strv_skip_first(args)))
+                        if (!output_show_unit_file(u))
                                 continue;
 
                         units[c++] = *u;
@@ -1374,17 +1368,29 @@ static int list_unit_files(sd_bus *bus, char **args) {
                 assert(c <= n_units);
                 hashmap_free(h);
         } else {
+                _cleanup_bus_message_unref_ sd_bus_message *m = NULL;
                 _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
 
-                r = sd_bus_call_method(
+                r = sd_bus_message_new_method_call(
                                 bus,
+                                &m,
                                 "org.freedesktop.systemd1",
                                 "/org/freedesktop/systemd1",
                                 "org.freedesktop.systemd1.Manager",
-                                "ListUnitFiles",
-                                &error,
-                                &reply,
-                                NULL);
+                                "ListUnitFilesFiltered");
+
+                if (r < 0)
+                        return bus_log_create_error(r);
+
+                r = sd_bus_message_append_strv(m, arg_states);
+                if (r < 0)
+                        return bus_log_create_error(r);
+
+                r = sd_bus_message_append_strv(m, strv_skip_first(args));
+                if (r < 0)
+                        return bus_log_create_error(r);
+
+                r = sd_bus_call(bus, m, 0, &error, &reply);
                 if (r < 0) {
                         log_error("Failed to list unit files: %s", bus_error_message(&error, r));
                         return r;
@@ -1404,7 +1410,7 @@ static int list_unit_files(sd_bus *bus, char **args) {
                                 unit_file_state_from_string(state)
                         };
 
-                        if (output_show_unit_file(&units[c], strv_skip_first(args)))
+                        if (output_show_unit_file(&units[c]))
                                 c ++;
 
                 }

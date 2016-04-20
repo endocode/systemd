@@ -2147,7 +2147,9 @@ DEFINE_TRIVIAL_CLEANUP_FUNC(UnitFileList*, unit_file_list_free_one);
 int unit_file_get_list(
                 UnitFileScope scope,
                 const char *root_dir,
-                Hashmap *h) {
+                Hashmap *h,
+                char **states,
+                char **patterns) {
 
         _cleanup_lookup_paths_free_ LookupPaths paths = {};
         char **i;
@@ -2199,6 +2201,9 @@ int unit_file_get_list(
 
                         if (!de)
                                 break;
+
+                        if (!strv_fnmatch_or_empty(patterns, de->d_name, FNM_NOESCAPE))
+                                continue;
 
                         if (hidden_file(de->d_name))
                                 continue;
@@ -2257,6 +2262,10 @@ int unit_file_get_list(
                                 f->state = also ? UNIT_FILE_INDIRECT : UNIT_FILE_STATIC;
 
                 found:
+                        if (!strv_isempty(states) &&
+                            !strv_contains(states, unit_file_state_to_string(f->state)))
+                                continue;
+
                         r = hashmap_put(h, basename(f->path), f);
                         if (r < 0)
                                 return r;
